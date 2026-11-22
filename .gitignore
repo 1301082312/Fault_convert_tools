@@ -4,3 +4,4 @@ tests/_out/
 *.npy
 *.sgy
 *.segy
+tests/local_*.bat

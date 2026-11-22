@@ -55,14 +55,17 @@ python -m fault_convert labels ts文件夹 seismic.npy out --mode both --origin 
 注意：同一条物理断层如果在 Petrel 里分成几个对象，会得到几个编号；拼接多段时跨接缝的同一条断层编号也不同，做实例训练前要自己合并。空的 TS 或完全落在数据块外的断层会在日志和 `label_info.json` 的 `empty_or_outside` 里列出。
 
 ## 验证
+回归测试用你自己的参考数据（以前用同样规则做出的 SEG-Y / 标签）检查本工具能否逐位复现，路径通过参数或环境变量传入，仓库里不含任何数据：
 ```bash
-python tests/test_against_x15.py
+python tests/test_against_x15.py --help
 ```
-用 X15 已有结果做回归测试（需要 `F:\FaultRegionExtractor` 和 newinterX15 文件夹），2026-11-22 全部通过：
-1. R0009 地震转出的 SEG-Y 与 `petrel_import/R0009/R0009_X15_seismic.sgy` 完全相同（道数据、道头、卷头）
-2. R0009 概率叠加的 SEG-Y 与 `R0009_X15_overlay_p05.sgy` 完全相同
-3. R0008 的 27 个 TS → 二值标签与 `training/R0008/fault.npy` 逐体素相同；实例标签（起始编号 136）与拼接体实例标签 IL 233–360 相同
-4. 补缺段 15 个 TS（`--inlines 220,232`，起始编号 121）→ 与拼接体实例标签 IL 220–232 相同
+`tests/run_local_x15.bat` 是用环境变量传路径的示例，复制成 `tests/local_*.bat`（已被 git 忽略）改成自己的路径即可。
+
+作者用 X15 数据跑过（2026-11-22，全部通过）：
+1. 样本地震转出的 SEG-Y 与之前导入 Petrel 的文件完全相同（道数据、道头、卷头）
+2. 概率叠加的 SEG-Y 完全相同
+3. 27 个 TS → 二值标签逐体素相同；实例标签（起始编号 136）与拼接体实例标签的对应段相同
+4. 15 个 TS（只保留 inline 220–232，起始编号 121）→ 与拼接体实例标签的对应段相同
 
 ## 文件
 ```
@@ -75,5 +78,6 @@ fault_convert/
   jobs.py      三个任务（界面和命令行共用）
   cli.py       命令行
   gui.py       图形界面
-tests/test_against_x15.py  回归测试
+tests/test_against_x15.py  回归测试（参考数据路径用参数传）
+tests/run_local_x15.bat    传路径的示例
 ```

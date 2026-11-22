@@ -1,8 +1,25 @@
-"""Regression test: the tool must reproduce the files made by hand for the X15 work (R0008 / R0009 / gap).
+"""Regression test: the tool must reproduce reference files made earlier with the same rules.
 
-Run:  python tests/test_against_x15.py      (needs the F:\\FaultRegionExtractor and newinterX15 folders)
-Writes temporary outputs to tests/_out (deleted at the end unless --keep).
+Needs your own reference data, given on the command line (or in environment variables):
+
+  python tests/test_against_x15.py --sample DIR --ref-seismic-sgy FILE --ref-overlay-sgy FILE
+                                   --ts-a DIR --ref-binary-a FILE --ref-instance FILE --ts-b DIR [--keep]
+
+  --sample            folder with seismic.npy, prediction.npy and metadata.json ("origin") of a sample
+  --ref-seismic-sgy   SEG-Y written earlier from that sample's seismic.npy        (check 1)
+  --ref-overlay-sgy   overlay SEG-Y written earlier from seismic + prediction       (check 2)
+  --ts-a / --ref-binary-a / --origin-a / --shape-a
+                      TSurf folder, its reference binary label, and that label's grid (check 3)
+  --ref-instance / --instance-origin / --start-a / --start-b / --ts-b / --inlines-b
+                      a stitched instance label: segment A (ids from --start-a) sits at the end of it,
+                      segment B (folder --ts-b, ids from --start-b) is clipped to --inlines-b (check 4)
+
+Each option can also be set as an environment variable FCT_<OPTION> (e.g. FCT_SAMPLE). Checks whose
+inputs are missing are skipped. Temporary outputs go to tests/_out (deleted unless --keep).
 """
+import argparse
+import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -15,13 +32,26 @@ sys.path.insert(0, str(ROOT))
 from fault_convert import Grid  # noqa: E402
 from fault_convert.jobs import job_labels, job_overlay, job_segy  # noqa: E402
 
-FRE = Path(r"F:\FaultRegionExtractor")
-R9 = FRE / "问题样本" / "R0009_X15seismic_漏检"
-R8_TS = Path(r"F:\SeismicData\newinterX15训练集_20261109\petrel导出")
-GAP_TS = FRE / "petrel_import" / "gap_R0009_R0008" / "faults_ts"
-STITCH = FRE / "training" / "R0009_gap_R0008_instance_20261121"
 OUT = ROOT / "tests" / "_out"
-quiet = lambda *a: None
+quiet = lambda *a: None  # noqa: E731
+
+
+def parse():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    env = lambda name, default=None: os.environ.get("FCT_" + name.upper().replace("-", "_"), default)  # noqa: E731
+    for name, default in (("sample", None), ("ref-seismic-sgy", None), ("ref-overlay-sgy", None),
+                          ("ts-a", None), ("ref-binary-a", None), ("origin-a", None), ("shape-a", None),
+                          ("ref-instance", None), ("instance-origin", None), ("start-a", "1"),
+                          ("ts-b", None), ("start-b", "1"), ("inlines-b", None)):
+        ap.add_argument("--" + name, default=env(name, default))
+    ap.add_argument("--dt", type=float, default=float(env("dt", "2")))
+    ap.add_argument("--bin", type=float, default=float(env("bin", "25")))
+    ap.add_argument("--keep", action="store_true")
+    return ap.parse_args()
+
+
+def ints(text):
+    return Grid.parse_origin(text)
 
 
 def same_segy(a, b):
@@ -31,44 +61,62 @@ def same_segy(a, b):
         return traces and heads and fa.bin == fb.bin
 
 
+def shape_file(shape, name):
+    p = OUT / name
+    np.save(p, np.zeros(shape, np.float32))  # only the shape is used
+    return p
+
+
 def main():
+    a = parse()
     OUT.mkdir(parents=True, exist_ok=True)
-    ok = True
-    g9 = Grid((8, 124, 209), 2.0, 25.0)
+    results = {}
 
-    job_segy([R9 / "seismic.npy"], OUT, g9, verify=True, log=quiet)
-    r = same_segy(OUT / "seismic.sgy", FRE / "petrel_import" / "R0009" / "R0009_X15_seismic.sgy")
-    print("1 segy  : R0009 seismic SEG-Y identical to petrel_import/R0009 (traces, headers, binary header):", r)
-    ok &= r
+    if a.sample:
+        sample = Path(a.sample)
+        origin = json.loads((sample / "metadata.json").read_text(encoding="utf-8"))["origin"]
+        grid = Grid(tuple(origin), a.dt, a.bin)
+        if a.ref_seismic_sgy:
+            job_segy([sample / "seismic.npy"], OUT, grid, verify=True, log=quiet)
+            results["1 seismic SEG-Y identical to reference"] = same_segy(OUT / "seismic.sgy", a.ref_seismic_sgy)
+        if a.ref_overlay_sgy:
+            job_overlay(sample / "seismic.npy", sample / "prediction.npy", OUT / "overlay.npy",
+                        segy_out=OUT / "overlay.sgy", grid=grid, log=quiet)
+            results["2 overlay SEG-Y identical to reference"] = same_segy(OUT / "overlay.sgy", a.ref_overlay_sgy)
 
-    job_overlay(R9 / "seismic.npy", R9 / "prediction.npy", OUT / "overlay.npy", segy_out=OUT / "overlay.sgy",
-                grid=g9, log=quiet)
-    r = same_segy(OUT / "overlay.sgy", FRE / "petrel_import" / "R0009" / "R0009_X15_overlay_p05.sgy")
-    print("2 overlay: R0009 overlay SEG-Y identical to petrel_import/R0009/R0009_X15_overlay_p05.sgy:", r)
-    ok &= r
+    if a.ts_a and a.ref_binary_a and a.origin_a:
+        ref_b = np.load(a.ref_binary_a, mmap_mode="r")
+        shape = ints(a.shape_a) if a.shape_a else ref_b.shape
+        start_a = int(a.start_a)
+        job_labels(a.ts_a, shape_file(shape, "a_shape.npy"), OUT / "a", Grid(ints(a.origin_a), a.dt, a.bin),
+                   "both", start_a, log=quiet)
+        results["3a binary label identical to reference"] = bool(
+            np.array_equal(np.load(OUT / "a" / "fault_binary.npy"), ref_b))
+        if a.ref_instance:
+            inst = np.load(a.ref_instance, mmap_mode="r")
+            seg = inst[inst.shape[0] - shape[0]:]
+            results["3b instance label identical to the end of the reference instance cube"] = bool(
+                np.array_equal(np.load(OUT / "a" / "fault_instance.npy"), seg))
 
-    seis8 = OUT / "r8_shape.npy"
-    np.save(seis8, np.zeros((128, 128, 699), np.float32))
-    info = job_labels(R8_TS, seis8, OUT / "r8", Grid((233, 150, 461)), "both", start_id=136, log=quiet)
-    b = np.load(OUT / "r8" / "fault_binary.npy")
-    r1 = np.array_equal(b, np.load(FRE / "training" / "R0008" / "fault.npy"))
-    inst_ref = np.load(STITCH / "fault_instance.npy", mmap_mode="r")
-    r2 = np.array_equal(np.load(OUT / "r8" / "fault_instance.npy"), inst_ref[225:])
-    print(f"3 labels: R0008 27 TS -> binary equal to training/R0008/fault.npy: {r1}; "
-          f"instance (ids 136-162) equal to stitched instance IL 233-360: {r2}  ({info['n_faults']} faults)")
-    ok &= r1 and r2
+    if a.ts_b and a.ref_instance and a.instance_origin and a.inlines_b:
+        inst = np.load(a.ref_instance, mmap_mode="r")
+        o = ints(a.instance_origin)
+        lo, hi = ints(a.inlines_b)[:2]
+        job_labels(a.ts_b, shape_file(inst.shape, "b_shape.npy"), OUT / "b", Grid(o, a.dt, a.bin), "instance",
+                   int(a.start_b), inline_range=(lo, hi), log=quiet)
+        got = np.load(OUT / "b" / "fault_instance.npy")
+        i0, i1 = lo - o[0], hi - o[0] + 1
+        results["4 clipped instance segment identical to reference"] = bool(
+            np.array_equal(got[i0:i1], inst[i0:i1]) and not got[:i0].any() and not got[i1:].any())
 
-    seis_st = OUT / "st_shape.npy"
-    np.save(seis_st, np.zeros((353, 128, 699), np.float32))
-    job_labels(GAP_TS, seis_st, OUT / "gap", Grid((8, 150, 461)), "instance", start_id=121,
-               inline_range=(220, 232), log=quiet)
-    gi = np.load(OUT / "gap" / "fault_instance.npy")
-    r = np.array_equal(gi[212:225], inst_ref[212:225]) and not gi[:212].any() and not gi[225:].any()
-    print("4 labels: gap 15 TS with --inlines 220,232 -> instance equal to stitched IL 220-232 (ids 121-135):", r)
-    ok &= r
-
-    if "--keep" not in sys.argv:
-        shutil.rmtree(OUT)
+    if not a.keep:
+        shutil.rmtree(OUT, ignore_errors=True)
+    if not results:
+        print("no reference data given; nothing checked (see --help)")
+        return 0
+    for k, v in results.items():
+        print(f"{'PASS' if v else 'FAIL'}  {k}")
+    ok = all(results.values())
     print("ALL PASSED" if ok else "SOME CHECKS FAILED")
     return 0 if ok else 1
 
