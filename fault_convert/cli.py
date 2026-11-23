@@ -1,4 +1,4 @@
-"""Command line:  python -m fault_convert <overlay|segy|labels|tonpy> ...   (see README.md)"""
+"""Command line:  python -m fault_convert <overlay|segy|labels|tonpy|fixheaders> ...   (see README.md)"""
 import argparse
 import json
 import sys
@@ -61,7 +61,16 @@ def main(argv=None):
                    help="origin = first line numbers (round trip with this tool) or 0,0 (default lines)")
     p.add_argument("--fill", type=float, default=0.0, help="value for missing traces (default 0)")
 
+    p = sub.add_parser("fixheaders", help="add Petrel default bytes (5, 17, 21, 73, 77) to SEG-Y files "
+                                          "written by older versions of this tool, in place")
+    p.add_argument("segy", nargs="+")
+
     a = ap.parse_args(argv)
+    if a.cmd == "fixheaders":
+        from .segy import add_petrel_default_bytes
+        for f in a.segy:
+            add_petrel_default_bytes(f)
+        return
     if a.cmd == "tonpy":
         from .segy_read import segy_to_npy
         b = lambda v: v if v == "auto" else int(v)  # noqa: E731

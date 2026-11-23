@@ -1,7 +1,9 @@
 """npy cube (inline, xline, time) -> SEG-Y that Petrel imports with byte 189/193 lines, 181/185 coords.
 
 Petrel import settings: 3D; X coordinate 181, Y coordinate 185; line detection "Trace header
-fields", inline 189, crossline 193. Coordinates are synthetic (line * bin_m), not survey geometry.
+fields", inline 189, crossline 193. The same values are also written where Petrel's plain
+"SEG-Y seismic data" import looks by default (inline 5; xline 17 and 21; X/Y 73/77), so that
+import works too. Coordinates are synthetic (line * bin_m), not survey geometry.
 """
 from pathlib import Path
 
@@ -41,9 +43,13 @@ def write_segy(cube, out_path, grid, title="Fault_convert_tools", log=print):
                     segyio.TraceField.TRACE_SEQUENCE_LINE: tr + 1,
                     segyio.TraceField.INLINE_3D: il,
                     segyio.TraceField.CROSSLINE_3D: xl,
-                    segyio.TraceField.CDP: tr + 1,
+                    segyio.TraceField.TRACE_SEQUENCE_FILE: il,   # byte 5: Petrel default line number
+                    segyio.TraceField.EnergySourcePoint: xl,     # byte 17: Petrel default shot point
+                    segyio.TraceField.CDP: xl,                   # byte 21: Petrel default CDP / trace number
                     segyio.TraceField.CDP_X: int(round(xl * b * 100)),
                     segyio.TraceField.CDP_Y: int(round(il * b * 100)),
+                    segyio.TraceField.SourceX: int(round(xl * b * 100)),  # bytes 73/77: Petrel default X/Y
+                    segyio.TraceField.SourceY: int(round(il * b * 100)),
                     segyio.TraceField.SourceGroupScalar: -100,
                     segyio.TraceField.TRACE_SAMPLE_COUNT: nt,
                     segyio.TraceField.TRACE_SAMPLE_INTERVAL: int(round(dt * 1000)),
@@ -62,6 +68,7 @@ def write_segy(cube, out_path, grid, title="Fault_convert_tools", log=print):
             5: f"CDP_X BYTE 181 = XL*{b:g}  CDP_Y BYTE 185 = IL*{b:g} (scalar -100)",
             6: f"DT {dt:g} MS  FIRST SAMPLE {t0} MS (global sample {o[2]})",
             7: "COORDINATES ARE SYNTHETIC - NOT REAL SURVEY GEOMETRY",
+            8: "ALSO: BYTE 5 = INLINE, 17 AND 21 = XLINE, 73/77 = X/Y (PETREL DEFAULTS)",
         })
     log(f"wrote {out_path}")
     return str(out_path)
@@ -85,3 +92,30 @@ def check_segy(path, npy_path=None):
         if npy_path is not None:
             info["equal_to_npy"] = bool(np.array_equal(segyio.tools.cube(f), np.load(npy_path, mmap_mode="r")))
     return info
+
+
+def add_petrel_default_bytes(path, log=print):
+    """Patch an existing SEG-Y written by this tool (189/193 lines, 181/185 coords) in place:
+    copy inline -> byte 5, xline -> bytes 17 and 21, CDP X/Y -> bytes 73/77. Samples are untouched."""
+    from .segy_read import read_binary, SAMPLE_BYTES
+    info = read_binary(path)
+    trace_bytes = 240 + info["ns"] * SAMPLE_BYTES[info["format"]]
+    offset = 3600 + 3200 * info["ext_headers"]
+    raw = np.memmap(path, dtype=np.uint8, mode="r+", offset=offset)
+    n = raw.size // trace_bytes
+    heads = raw[:n * trace_bytes].reshape(n, trace_bytes)
+
+    def get(byte):
+        return heads[:, byte - 1:byte + 3].copy().view(">i4").ravel()
+
+    def put(byte, values):
+        heads[:, byte - 1:byte + 3] = np.ascontiguousarray(values.astype(">i4")).view(np.uint8).reshape(n, 4)
+
+    il, xl, x, y = get(189), get(193), get(181), get(185)
+    if not (np.ptp(il) or np.ptp(xl)):
+        raise ValueError("bytes 189/193 hold no line numbers; not a SEG-Y written by this tool")
+    put(5, il), put(17, xl), put(21, xl), put(73, x), put(77, y)
+    raw.flush()
+    del heads, raw
+    log(f"patched {n} trace headers of {path}: 5=inline, 17/21=xline, 73/77=X/Y")
+    return n

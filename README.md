@@ -9,7 +9,7 @@
 
 ## 启动
 - 图形界面：双击 `run_gui.bat`（或 `python run_gui.py`）
-- 命令行：在本文件夹下 `python -m fault_convert <overlay|segy|labels|tonpy> ...`
+- 命令行：在本文件夹下 `python -m fault_convert <overlay|segy|labels|tonpy|fixheaders> ...`
 - 依赖：Python 3、numpy、segyio（tkinter 随 Python 自带）
 
 ## 坐标约定（三步共用，必须一致）
@@ -19,11 +19,12 @@
 - **道距**：默认 25 m（只是编出来的坐标，不是真实工区坐标）
 
 写进 SEG-Y 的道头：inline（字节 189）= 全局 inline 号，crossline（193）= 全局 xline 号，CDP_X（181）= xline × 道距，CDP_Y（185）= inline × 道距（缩放 −100），首样点时间 = 起点 sample × 采样间隔。
+同样的值还会写进 Petrel 默认格式（"SEG-Y seismic data"）自动读取的字节：**5 = inline，17 和 21 = xline，73 / 77 = X / Y**，所以用默认格式也能直接导入。以前版本导出的 SEG-Y 可以就地补写（只改道头，不动数据）：`python -m fault_convert fixheaders 文件.sgy`
 在这样的 SEG-Y 上解释、再导出的 TS，用**同一组起点/采样间隔/道距**就能精确落回 npy 下标。
 
 如果输入 npy 旁边有 FaultRegionExtractor 的 `metadata.json`（字段 `origin`）或训练脚本写的 `info.json`（字段 `origin_global_ixt`），界面上点"从 metadata 读取"或命令行不写 `--origin`，会自动读取起点。
 
-**Petrel 导入设置**：SEG-Y，3D；X 坐标 181，Y 坐标 185；Line detection 选 Trace header fields，Inline 189，Crossline 193。导入前可以点 Scan 核对第一道的线号。文件放在纯英文路径下（Petrel 对中文路径支持不好）。
+**Petrel 导入设置**：默认的 SEG-Y seismic data 格式一般能直接识别；也可以用 SEG-Y with preset parameters：3D；X 坐标 181，Y 坐标 185；Line detection 选 Trace header fields，Inline 189，Crossline 193。导入前可以点 Scan 核对第一道的线号。文件放在纯英文路径下（Petrel 对中文路径支持不好）。
 
 ## 1 概率叠加
 ```bash

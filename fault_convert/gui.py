@@ -293,8 +293,10 @@ class App(tk.Tk):
         self._path_row(c, 1, "输出文件夹", "sg_out", "dir")
         self._grid_card(t, "sg_", "sg_npy")
         h = self._card(t, "Petrel 导入设置")
-        ttk.Label(h, text="SEG-Y · 3D ·  X / Y 坐标字节 181 / 185 ·  Line detection：Trace header fields ·  "
-                          "Inline 189 · Crossline 193", style="Card.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(h, text="默认的 SEG-Y seismic data 格式可直接导入（已写入 Petrel 默认字节 5 / 17 / 21 / 73 / 77）",
+                  style="Card.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(h, text="或用 preset parameters：3D ·  X / Y 坐标 181 / 185 ·  Trace header fields ·  Inline 189 · Crossline 193",
+                  style="Muted.TLabel").grid(row=2, column=0, sticky="w")
         ttk.Label(h, text="SEG-Y 请放在纯英文路径下；路径含中文时开始前会提示。", style="Muted.TLabel").grid(row=1, column=0, sticky="w")
         self._actions(t, self._run_segy, "sg_out")
 

@@ -54,11 +54,20 @@ def ints(text):
     return Grid.parse_origin(text)
 
 
+KEY_BYTES = (71, 109, 115, 117, 181, 185, 189, 193)  # what the reference files define
+
+
 def same_segy(a, b):
+    """Samples, binary header and the geometry bytes equal; plus the Petrel default bytes
+    (5 = inline, 17/21 = xline, 73/77 = X/Y) present in the new file."""
     with segyio.open(str(a)) as fa, segyio.open(str(b)) as fb:
         traces = np.array_equal(segyio.tools.cube(fa), segyio.tools.cube(fb))
-        heads = all(dict(fa.header[i]) == dict(fb.header[i]) for i in range(0, fa.tracecount, 997))
-        return traces and heads and fa.bin == fb.bin
+        heads = extra = True
+        for i in range(0, fa.tracecount, 997):
+            ha, hb = fa.header[i], fb.header[i]
+            heads &= all(ha[k] == hb[k] for k in KEY_BYTES)
+            extra &= ha[5] == ha[189] and ha[17] == ha[21] == ha[193] and ha[73] == ha[181] and ha[77] == ha[185]
+        return traces and heads and extra and fa.bin == fb.bin
 
 
 def shape_file(shape, name):
