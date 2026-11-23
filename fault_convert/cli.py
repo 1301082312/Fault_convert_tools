@@ -1,4 +1,4 @@
-"""Command line:  python -m fault_convert <overlay|segy|labels> ...   (see README.md)"""
+"""Command line:  python -m fault_convert <overlay|segy|labels|tonpy> ...   (see README.md)"""
 import argparse
 import json
 import sys
@@ -51,7 +51,25 @@ def main(argv=None):
     p.add_argument("--copy-seismic", action="store_true", help="also save seismic.npy into out_dir")
     add_grid(p)
 
+    p = sub.add_parser("tonpy", help="SEG-Y -> npy (inline, xline, time) with header-byte auto-detection")
+    p.add_argument("segy"), p.add_argument("out_npy")
+    p.add_argument("--inline-byte", default="auto", help="e.g. 189, 9, 221 (default: auto-detect)")
+    p.add_argument("--xline-byte", default="auto", help="e.g. 193, 21 (default: auto-detect)")
+    p.add_argument("--coord-bytes", default="auto", help="X,Y bytes e.g. 181,185 or 73,77 (default: auto)")
+    p.add_argument("--inlines", help="only inline numbers a,b")
+    p.add_argument("--origin-mode", choices=["lines", "zero"], default="lines",
+                   help="origin = first line numbers (round trip with this tool) or 0,0 (default lines)")
+    p.add_argument("--fill", type=float, default=0.0, help="value for missing traces (default 0)")
+
     a = ap.parse_args(argv)
+    if a.cmd == "tonpy":
+        from .segy_read import segy_to_npy
+        b = lambda v: v if v == "auto" else int(v)  # noqa: E731
+        r = segy_to_npy(a.segy, a.out_npy, b(a.inline_byte), b(a.xline_byte),
+                        a.coord_bytes if a.coord_bytes == "auto" else Grid.parse_origin(a.coord_bytes)[:2],
+                        Grid.parse_origin(a.inlines)[:2] if a.inlines else None, a.origin_mode, a.fill)
+        print(json.dumps({k: v for k, v in r.items() if k != "detected_line_bytes"}, ensure_ascii=False, indent=1))
+        return
     from pathlib import Path
     from .segy import non_ascii_paths
     planned = [a.segy] if a.cmd == "overlay" and a.segy else \

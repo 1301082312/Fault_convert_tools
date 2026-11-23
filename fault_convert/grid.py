@@ -38,10 +38,13 @@ def grid_from_metadata(path, dt_ms=2.0, bin_m=25.0):
     this tool and the training scripts ("origin_global_ixt"). Returns None when nothing fits.
     """
     path = Path(path)
-    candidates = [path] if path.is_file() else [path / "metadata.json", path / "info.json"]
+    if path.suffix == ".npy":  # <name>_info.json written by SEG-Y -> npy, then the folder's files
+        candidates = [path.with_name(path.stem + "_info.json"), path.parent / "metadata.json", path.parent / "info.json"]
+    elif path.is_file():
+        candidates = [path]
+    else:
+        candidates = [path / "metadata.json", path / "info.json"]
     for c in candidates:
-        if c.suffix == ".npy":
-            c = c.parent / "metadata.json"
         if not c.is_file():
             continue
         try:

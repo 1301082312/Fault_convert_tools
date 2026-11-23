@@ -14,6 +14,7 @@ from .dnd_win import enable_drop
 from .grid import Grid, grid_from_metadata
 from .jobs import job_labels, job_overlay, job_segy
 from .segy import non_ascii_paths
+from .segy_read import COORD_PRESETS, LINE_PRESETS, detect_lines, read_binary, read_headers, segy_to_npy
 
 # palette
 BG, CARD, LINE = "#eef2f7", "#ffffff", "#d7dee8"
@@ -23,7 +24,7 @@ HEADER, HEADER_SUB = "#16233a", "#9fb3cf"
 LOG_BG, LOG_FG = "#141b26", "#d6deea"
 OK, WARN, ERR = "#34c77b", "#f5a524", "#ff5d5d"
 
-PROGRESS = re.compile(r"(?:inline|\[)\s*(\d+)\s*/\s*(\d+)")
+PROGRESS = re.compile(r"(?:inline|traces|\[)\s*(\d+)\s*/\s*(\d+)")
 
 
 def _dpi_aware():
@@ -56,6 +57,7 @@ class App(tk.Tk):
         self._overlay_tab(nb)
         self._segy_tab(nb)
         self._labels_tab(nb)
+        self._tonpy_tab(nb)
         self._log_panel(body)
         self._status_bar()
         self.after(100, self._drain)
@@ -81,7 +83,8 @@ class App(tk.Tk):
                 files += sorted(str(y) for y in x.glob("*.npy")) if x.is_dir() else [str(x)]
             value = ";".join(files)
         elif kind == "save" and p[0].is_dir():  # dropped a folder for an output file
-            value = str(p[0] / "overlay_p05.npy")
+            name = (Path(self.v["tn_segy"].get()).stem or "seismic") + ".npy" if key == "tn_out" else "overlay_p05.npy"
+            value = str(p[0] / name)
         else:
             value = str(p[0])
             ext = types[0][1].lstrip("*")
@@ -135,7 +138,7 @@ class App(tk.Tk):
         h.pack(fill="x")
         h.pack_propagate(False)
         tk.Label(h, text="断层数据转换工具", bg=HEADER, fg="white", font=self.f_title).pack(anchor="w", padx=20, pady=(12, 0))
-        tk.Label(h, text="概率叠加  ·  npy → SEG-Y（Petrel）  ·  Petrel TS → 二值 / 实例标签",
+        tk.Label(h, text="概率叠加  ·  npy → SEG-Y（Petrel）  ·  Petrel TS → 二值 / 实例标签  ·  SEG-Y → npy",
                  bg=HEADER, fg=HEADER_SUB, font=self.f_small).pack(anchor="w", padx=21)
 
     def _tab(self, nb, title):
@@ -173,7 +176,12 @@ class App(tk.Tk):
             return
         paths = [p for p in text.split(";") if p]
         try:
-            if kind in ("open", "opens") and show_shape:
+            if kind == "open" and Path(paths[0]).suffix.lower() in (".sgy", ".segy"):
+                b = read_binary(paths[0])
+                lab.configure(text=f"{b['ns']} 样点 · 采样间隔 {b['dt_ms']:g} ms · 格式码 {b['format']}"
+                                   f"（{'IBM 浮点' if b['format'] == 1 else 'IEEE 浮点' if b['format'] == 5 else '其他'}）",
+                              style="Info.TLabel")
+            elif kind in ("open", "opens") and show_shape:
                 parts = []
                 for p in paths[:3]:
                     a = np.load(p, mmap_mode="r")
@@ -288,6 +296,102 @@ class App(tk.Tk):
                   style="Muted.TLabel").pack(anchor="w")
         self._actions(t, self._run_labels, "lb_out")
 
+    def _tonpy_tab(self, nb):
+        t = self._tab(nb, "  ④ SEG-Y 转 npy  ")
+        c = self._card(t, "输入与输出")
+        self._path_row(c, 0, "SEG-Y 文件", "tn_segy", types=(("SEG-Y", "*.sgy *.segy"),))
+        self._path_row(c, 1, "输出 npy", "tn_out", "save", show_shape=False)
+        self.v["tn_segy"].trace_add("write", lambda *_: self._suggest_npy())
+        p = self._card(t, "道头字节")
+        row = ttk.Frame(p, style="Card.TFrame")
+        row.grid(row=0, column=0, sticky="w")
+        line_opts = ["自动识别"] + [f"{a} / {b}  {d}" for a, b, d in LINE_PRESETS] + ["自定义"]
+        coord_opts = ["自动"] + [f"{a} / {b}  {d}" for a, b, d in COORD_PRESETS]
+        box = ttk.Frame(row, style="Card.TFrame")
+        box.pack(side="left", padx=(0, 18), anchor="n")
+        ttk.Label(box, text="inline / xline 字节", style="Card.TLabel").pack(anchor="w")
+        self.v["tn_lines"] = tk.StringVar(value=line_opts[0])
+        cb = ttk.Combobox(box, textvariable=self.v["tn_lines"], values=line_opts, state="readonly", width=34)
+        cb.pack(anchor="w")
+        ttk.Label(box, text="自定义时填右边两格", style="Muted.TLabel").pack(anchor="w")
+        self._small_entry(row, "inline 字节", "tn_ib", "", 6)
+        self._small_entry(row, "xline 字节", "tn_xb", "", 6)
+        box = ttk.Frame(row, style="Card.TFrame")
+        box.pack(side="left", padx=(0, 18), anchor="n")
+        ttk.Label(box, text="坐标 X / Y 字节", style="Card.TLabel").pack(anchor="w")
+        self.v["tn_coord"] = tk.StringVar(value=coord_opts[0])
+        ttk.Combobox(box, textvariable=self.v["tn_coord"], values=coord_opts, state="readonly", width=18).pack(anchor="w")
+        ttk.Label(box, text="缩放系数读 71 字节", style="Muted.TLabel").pack(anchor="w")
+        b = ttk.Frame(p, style="Card.TFrame")
+        b.grid(row=1, column=0, sticky="w", pady=(6, 0))
+        ttk.Button(b, text="扫描道头", command=self._scan_headers).pack(side="left")
+        self.scan_label = ttk.Label(b, text="扫描后列出能组成完整网格的字节组合", style="Muted.TLabel")
+        self.scan_label.pack(side="left", padx=10)
+        o = self._card(t, "范围与起点")
+        row = ttk.Frame(o, style="Card.TFrame")
+        row.grid(row=0, column=0, sticky="w")
+        self._small_entry(row, "只取 inline 线号（可空）", "tn_il", "", 14, "如 3508,3719；空 = 全部")
+        self._small_entry(row, "缺道填充值", "tn_fill", "0", 8)
+        box = ttk.Frame(row, style="Card.TFrame")
+        box.pack(side="left", anchor="n")
+        ttk.Label(box, text="起点（写进 info.json）", style="Card.TLabel").pack(anchor="w")
+        self.v["tn_origin"] = tk.StringVar(value="lines")
+        ttk.Radiobutton(box, text="按线号（本工具导出的 SEG-Y 用这个，可原样往返）", value="lines",
+                        variable=self.v["tn_origin"], style="Card.TRadiobutton").pack(anchor="w")
+        ttk.Radiobutton(box, text="从 0 开始（数组下标 = 起点 0,0）", value="zero",
+                        variable=self.v["tn_origin"], style="Card.TRadiobutton").pack(anchor="w")
+        self._actions(t, self._run_tonpy, "tn_out")
+
+    def _suggest_npy(self):
+        src = self.v["tn_segy"].get().strip()
+        if src and not self.v["tn_out"].get().strip() and Path(src).suffix.lower() in (".sgy", ".segy"):
+            self.v["tn_out"].set(str(Path(src).with_suffix(".npy")))
+
+    def _line_bytes(self):
+        sel = self.v["tn_lines"].get()
+        if sel.startswith("自动"):
+            return "auto", "auto"
+        if sel.startswith("自定义"):
+            return int(self.v["tn_ib"].get()), int(self.v["tn_xb"].get())
+        a, b = sel.split()[0], sel.split()[2]
+        return int(a), int(b)
+
+    def _scan_headers(self):
+        path = self.v["tn_segy"].get().strip()
+        if not path:
+            messagebox.showerror("缺少输入", "请先选择 SEG-Y 文件")
+            return
+
+        def work():
+            heads, info = read_headers(path)
+            cands = detect_lines(heads)
+            self.log(f"{Path(path).name}: {info['traces']} 道，{info['ns']} 样点，{info['dt_ms']:g} ms，格式码 {info['format']}")
+            if not cands:
+                self.log("警告：常用字节组合都组不成网格，请用自定义字节")
+            for c in cands:
+                self.log(f"  inline {c['inline_byte']} / xline {c['xline_byte']}（{c['desc']}）：{c['n_il']} × {c['n_xl']}，"
+                         f"inline {c['inline'][0]}–{c['inline'][1]}，xline {c['xline'][0]}–{c['xline'][1]}，完整度 {c['filled']:.1%}")
+            text = (f"推荐 {cands[0]['inline_byte']} / {cands[0]['xline_byte']}：{cands[0]['n_il']} × {cands[0]['n_xl']}"
+                    if cands else "没有找到合适的组合")
+            self.ui(lambda: self.scan_label.configure(text=text, style="Info.TLabel" if cands else "Bad.TLabel"))
+        self._start(work)
+
+    def _run_tonpy(self):
+        if not self._need("tn_segy", "tn_out"):
+            return
+        try:
+            ib, xb = self._line_bytes()
+        except ValueError:
+            messagebox.showerror("字节", "自定义时请填写 inline 和 xline 字节")
+            return
+        cs = self.v["tn_coord"].get()
+        coord = "auto" if cs.startswith("自动") else (int(cs.split()[0]), int(cs.split()[2]))
+        il = self.v["tn_il"].get().strip()
+        rng = Grid.parse_origin(il)[:2] if il else None
+        args = (self.v["tn_segy"].get(), self.v["tn_out"].get(), ib, xb, coord, rng,
+                self.v["tn_origin"].get(), float(self.v["tn_fill"].get() or 0))
+        self._start(lambda: segy_to_npy(*args, log=self.log))
+
     def _log_panel(self, parent):
         bar = ttk.Frame(parent, style="Bg.TFrame")
         bar.pack(fill="x", pady=(12, 4))
@@ -347,13 +451,20 @@ class App(tk.Tk):
     def log(self, text):
         self.msgs.put(str(text))
 
+    def ui(self, fn):
+        """Run fn on the Tk thread (worker threads must not touch widgets directly)."""
+        self.msgs.put(fn)
+
     def _drain(self):
         while not self.msgs.empty():
             text = self.msgs.get()
+            if callable(text):
+                text()
+                continue
             m = PROGRESS.search(text)
             if m and int(m.group(2)):
                 self.bar.configure(value=100 * int(m.group(1)) / int(m.group(2)))
-                if "inline" in text and not text.startswith("["):
+                if ("inline" in text or text.startswith("traces")) and not text.startswith("["):
                     self.status.configure(text=text)
                     continue  # per-inline progress goes to the status bar, not the log
             tag = ("err" if text.startswith(("出错", "Traceback")) else "warn" if text.startswith("警告")
@@ -386,8 +497,8 @@ class App(tk.Tk):
                 self.log("出错：" + str(e))
                 self.log(traceback.format_exc())
             finally:
-                self.after(0, lambda: (self._set_busy(False, "完成" if ok else "出错，详见日志"),
-                                       self.bar.configure(value=100 if ok else 0)))
+                self.ui(lambda: (self._set_busy(False, "完成" if ok else "出错，详见日志"),
+                                 self.bar.configure(value=100 if ok else 0)))
         threading.Thread(target=work, daemon=True).start()
 
     def _need(self, *keys):
@@ -415,9 +526,9 @@ class App(tk.Tk):
         if segy and not self._segy_paths_ok([segy]):
             return
         grid = self._grid("ov_") if segy else None
-        self._start(lambda: job_overlay(self.v["ov_seis"].get(), self.v["ov_prob"].get(), out,
-                                        float(self.v["ov_thr"].get()), float(self.v["ov_clip"].get()),
-                                        float(self.v["ov_scale"].get()), segy, grid, log=self.log))
+        args = (self.v["ov_seis"].get(), self.v["ov_prob"].get(), out, float(self.v["ov_thr"].get()),
+                float(self.v["ov_clip"].get()), float(self.v["ov_scale"].get()), segy, grid)
+        self._start(lambda: job_overlay(*args, log=self.log))
 
     def _run_segy(self):
         if not self._need("sg_npy", "sg_out"):
@@ -427,7 +538,7 @@ class App(tk.Tk):
         if not self._segy_paths_ok([out_dir / (Path(p).stem + ".sgy") for p in files]):
             return
         grid = self._grid("sg_")
-        self._start(lambda: job_segy(files, self.v["sg_out"].get(), grid, log=self.log))
+        self._start(lambda: job_segy(files, str(out_dir), grid, log=self.log))
 
     def _run_labels(self):
         if not self._need("lb_ts", "lb_seis", "lb_out"):
@@ -435,9 +546,9 @@ class App(tk.Tk):
         il = self.v["lb_il"].get().strip()
         rng = Grid.parse_origin(il)[:2] if il else None
         grid = self._grid("lb_")
-        self._start(lambda: job_labels(self.v["lb_ts"].get(), self.v["lb_seis"].get(), self.v["lb_out"].get(),
-                                       grid, self.v["lb_mode"].get(), int(self.v["lb_start"].get()), rng,
-                                       self.v["lb_copy"].get(), log=self.log))
+        args = (self.v["lb_ts"].get(), self.v["lb_seis"].get(), self.v["lb_out"].get(), grid,
+                self.v["lb_mode"].get(), int(self.v["lb_start"].get()), rng, self.v["lb_copy"].get())
+        self._start(lambda: job_labels(*args, log=self.log))
 
 
 def main():

@@ -1,4 +1,4 @@
-"""Fault_convert_tools: probability overlay, npy -> SEG-Y, and Petrel TSurf -> npy fault labels.
+"""Fault_convert_tools: probability overlay, npy -> SEG-Y, Petrel TSurf -> npy fault labels, SEG-Y -> npy.
 
 All cubes are numpy arrays with axis order (inline, xline, time). A cube is placed in its parent
 survey by `Grid`: the global (inline, xline, sample) index of its first voxel plus the sample
@@ -14,6 +14,7 @@ so fault surfaces interpreted in Petrel on these SEG-Y files map straight back t
 from .grid import Grid  # noqa: F401
 from .overlay import make_overlay  # noqa: F401
 from .segy import npy_to_segy, write_segy  # noqa: F401
+from .segy_read import segy_to_npy  # noqa: F401
 from .tsurf import build_labels, read_tsurf  # noqa: F401
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"

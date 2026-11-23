@@ -1,14 +1,15 @@
 # Fault_convert_tools 断层数据转换工具
 
-把 X15 标注流程里反复用到的三步做成一个可复用的程序，有图形界面，也有命令行：
+把 X15 标注流程里反复用到的几步做成一个可复用的程序，有图形界面，也有命令行：
 
 1. **概率叠加**：把断层概率体叠加到地震 npy 上，得到 overlay npy（可同时输出 SEG-Y）
 2. **npy 转 SEG-Y**：地震 npy、overlay npy 等任意三维 npy 转成 Petrel 能直接导入的 SEG-Y
 3. **TS 转标签**：把从 Petrel 导出的断层面（GOCAD TSurf `.ts`）和原地震 npy 对齐，生成二值标签和/或实例标签 npy
+4. **SEG-Y 转 npy**：常用道头字节可选或自动识别，支持乱序、缺道、IBM 浮点
 
 ## 启动
 - 图形界面：双击 `run_gui.bat`（或 `python run_gui.py`）
-- 命令行：在本文件夹下 `python -m fault_convert <overlay|segy|labels> ...`
+- 命令行：在本文件夹下 `python -m fault_convert <overlay|segy|labels|tonpy> ...`
 - 依赖：Python 3、numpy、segyio（tkinter 随 Python 自带）
 
 ## 坐标约定（三步共用，必须一致）
@@ -54,6 +55,32 @@ python -m fault_convert labels ts文件夹 seismic.npy out --mode both --origin 
 
 注意：同一条物理断层如果在 Petrel 里分成几个对象，会得到几个编号；拼接多段时跨接缝的同一条断层编号也不同，做实例训练前要自己合并。空的 TS 或完全落在数据块外的断层会在日志和 `label_info.json` 的 `empty_or_outside` 里列出。
 
+## 4 SEG-Y 转 npy
+```bash
+python -m fault_convert tonpy input.sgy out/seismic.npy                       # 自动识别字节
+python -m fault_convert tonpy input.sgy out/seismic.npy --inline-byte 221 --xline-byte 21 --inlines 3508,3719 --origin-mode zero
+```
+- 输出 `seismic.npy`（float32，inline × xline × time）和 `seismic_info.json`（线号范围、所用字节、采样间隔、首样点时间、四角坐标、`origin_global_ixt`）
+- **常用字节组合**（界面下拉框可选，"自动识别"按这个顺序试，取第一个能组成完整网格的）：
+
+  | inline / xline | 说明 |
+  | --- | --- |
+  | 189 / 193 | SEG-Y rev1 标准 INLINE_3D / CROSSLINE_3D（本工具导出的 SEG-Y 就是这个） |
+  | 9 / 21 | FFID / CDP |
+  | 221 / 21 | 部分处理软件（X15 原始数据就是这个） |
+  | 5 / 21 | 道序号(卷内) / CDP |
+  | 9 / 13 | FFID / 道号(炮内) |
+  | 17 / 21 | 炮点号 / CDP |
+  | 213 / 21 | 213 / CDP |
+  | 1 / 5 | 道序号 / 道序号(卷内) |
+
+  坐标字节：181/185（CDP X/Y）、73/77（炮点 X/Y）、81/85（检波点 X/Y），缩放系数读 71 字节。都不对时选"自定义"手填
+- 界面上的"扫描道头"会列出所有能组成网格的字节组合、各自的线号范围和完整度
+- 按道头线号把每一道放到网格上，所以**排序无所谓**；缺道填 0（可改），并另存 `*_trace_mask.npy`（1 = 有道）
+- IBM 浮点和 IEEE 浮点都支持；道头一次性内存映射读取，几 GB 的文件也很快
+- **起点**：选"按线号"时 `origin_global_ixt` = (第一条 inline 号, 第一条 xline 号, 首样点时间 / 采样间隔)，本工具导出的 SEG-Y 转回来与原 npy 完全一致、起点也一致；外来数据想让数组下标从 0 开始就选"从 0 开始"
+- 线号间隔不是 1 或不均匀时会给出警告（数组下标 ≠ 线号 − 起点）
+
 ## 验证
 回归测试用你自己的参考数据（以前用同样规则做出的 SEG-Y / 标签）检查本工具能否逐位复现，路径通过参数或环境变量传入，仓库里不含任何数据：
 ```bash
@@ -75,6 +102,8 @@ fault_convert/
   overlay.py   概率叠加
   segy.py      写 SEG-Y、读回核对
   tsurf.py     读 TS、断层面栅格化、二值/实例标签
+  segy_read.py SEG-Y 转 npy、道头字节识别
+  dnd_win.py   Windows 拖放
   jobs.py      三个任务（界面和命令行共用）
   cli.py       命令行
   gui.py       图形界面
