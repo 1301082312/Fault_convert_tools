@@ -10,7 +10,7 @@ from tkinter import filedialog, font as tkfont, messagebox, ttk
 
 import numpy as np
 
-from .dnd_win import enable_drop
+from .dnd_win import enable_drop, take_drops
 from .grid import Grid, grid_from_metadata
 from .jobs import job_labels, job_overlay, job_segy
 from .segy import non_ascii_paths
@@ -66,10 +66,21 @@ class App(tk.Tk):
     # ---------------- drag and drop ----------------
     def _enable_drops(self):
         ok = 0
-        for entry, key, kind, types in self.drop_targets:
-            ok += enable_drop(entry, lambda paths, k=key, kd=kind, t=types: self._dropped(k, kd, t, paths))
+        for n, (entry, key, kind, types) in enumerate(self.drop_targets):
+            ok += enable_drop(entry, n)
         if ok:
-            self.log(f"可以把文件或文件夹直接拖到输入框里")
+            self.log("可以把文件或文件夹直接拖到输入框里")
+            self.after(150, self._poll_drops)
+
+    def _poll_drops(self):
+        # the window procedure only queues drops; widgets are touched here, in Tk's own timer
+        for n, paths in take_drops():
+            _, key, kind, types = self.drop_targets[n]
+            try:
+                self._dropped(key, kind, types, paths)
+            except Exception as e:  # noqa: BLE001 - shown to the user
+                self.log(f"出错：拖入失败 {e}")
+        self.after(150, self._poll_drops)
 
     def _dropped(self, key, kind, types, paths):
         if not paths:
@@ -128,7 +139,8 @@ class App(tk.Tk):
         s.configure("Main.TNotebook", background=BG, borderwidth=0, tabmargins=(0, 0, 0, 0))
         s.configure("Main.TNotebook.Tab", padding=(20, 9), font=self.f_bold, background="#dde4ee",
                     foreground=MUTED, borderwidth=0)
-        s.map("Main.TNotebook.Tab", background=[("selected", CARD)], foreground=[("selected", ACCENT)])
+        s.map("Main.TNotebook.Tab", background=[("selected", CARD)], foreground=[("selected", ACCENT)],
+              padding=[("selected", (20, 9))], expand=[("selected", (0, 0, 0, 0))])  # clam shrinks selected tabs
         s.configure("Accent.Horizontal.TProgressbar", background=ACCENT, troughcolor="#dde4ee",
                     bordercolor="#dde4ee", lightcolor=ACCENT, darkcolor=ACCENT, thickness=8)
         s.configure("Status.TLabel", background=BG, foreground=MUTED, font=self.f_small)
@@ -210,13 +222,32 @@ class App(tk.Tk):
             self.v[key].set(p)
 
     def _small_entry(self, parent, label, key, value, width=8, hint=None):
+        # label / entry / hint rows have the same height in every box, so boxes line up (top-aligned)
         box = ttk.Frame(parent, style="Card.TFrame")
-        box.pack(side="left", padx=(0, 18))
+        box.pack(side="left", padx=(0, 18), anchor="n")
         ttk.Label(box, text=label, style="Card.TLabel").pack(anchor="w")
         ttk.Entry(box, textvariable=self._var(key, value), width=width).pack(anchor="w")
-        if hint:
-            ttk.Label(box, text=hint, style="Muted.TLabel").pack(anchor="w")
+        ttk.Label(box, text=hint or " ", style="Muted.TLabel").pack(anchor="w")
         return box
+
+    def _button_box(self, parent, text, command):
+        """A button in a box with an empty label row above, so it sits level with the entries."""
+        box = ttk.Frame(parent, style="Card.TFrame")
+        box.pack(side="left", padx=(0, 18), anchor="n")
+        ttk.Label(box, text=" ", style="Card.TLabel").pack(anchor="w")
+        ttk.Button(box, text=text, command=command).pack(anchor="w")
+        return box
+
+    def _check(self, parent, text, var):
+        # native Windows check box (✓) instead of clam's X indicator
+        return tk.Checkbutton(parent, text=text, variable=var, bg=CARD, activebackground=CARD, fg=TEXT,
+                              activeforeground=TEXT, selectcolor="white", font=self.f_base,
+                              highlightthickness=0, bd=0, cursor="hand2")
+
+    def _radio(self, parent, text, value, var):
+        return tk.Radiobutton(parent, text=text, value=value, variable=var, bg=CARD, activebackground=CARD,
+                              fg=TEXT, activeforeground=TEXT, selectcolor="white", font=self.f_base,
+                              highlightthickness=0, bd=0, cursor="hand2")
 
     def _grid_card(self, parent, prefix, near_key):
         c = self._card(parent, "空间位置（导出 SEG-Y 和转标签必须用同一组）")
@@ -225,9 +256,7 @@ class App(tk.Tk):
         self._small_entry(row, "起点 inline, xline, sample", prefix + "origin", "0,0,0", 20, "第一个体素在原始数据体中的下标")
         self._small_entry(row, "采样间隔 (ms)", prefix + "dt", "2", 8)
         self._small_entry(row, "道距 (m)", prefix + "bin", "25", 8)
-        b = ttk.Frame(row, style="Card.TFrame")
-        b.pack(side="left", anchor="n", pady=(18, 0))
-        ttk.Button(b, text="从 metadata 读取", command=lambda: self._read_meta(prefix, near_key)).pack()
+        self._button_box(row, "从 metadata 读取", lambda: self._read_meta(prefix, near_key))
 
     def _actions(self, parent, command, open_key=None):
         a = ttk.Frame(parent, style="Card.TFrame")
@@ -252,8 +281,8 @@ class App(tk.Tk):
         self._small_entry(row, "裁剪百分位", "ov_clip", "99", 8, "|振幅| 的百分位")
         self._small_entry(row, "缩放", "ov_scale", "0.6", 8, "地震缩放到 ±缩放")
         self.v["ov_segy"] = tk.BooleanVar(value=True)
-        ttk.Checkbutton(p, text="同时输出 SEG-Y（与 overlay npy 同名 .sgy）", style="Card.TCheckbutton",
-                        variable=self.v["ov_segy"]).grid(row=1, column=0, sticky="w", pady=(8, 0))
+        self._check(p, "同时输出 SEG-Y（与 overlay npy 同名 .sgy）", self.v["ov_segy"]).grid(
+            row=1, column=0, sticky="w", pady=(6, 0))
         self._grid_card(t, "ov_", "ov_seis")
         self._actions(t, self._run_overlay, "ov_out")
 
@@ -285,12 +314,11 @@ class App(tk.Tk):
         modes = ttk.Frame(box, style="Card.TFrame")
         modes.pack(anchor="w")
         for text, val in (("二值 + 实例", "both"), ("仅二值", "binary"), ("仅实例", "instance")):
-            ttk.Radiobutton(modes, text=text, value=val, variable=self.v["lb_mode"], style="Card.TRadiobutton").pack(side="left", padx=(0, 8))
+            self._radio(modes, text, val, self.v["lb_mode"]).pack(side="left", padx=(0, 10), pady=(2, 0))
         self._small_entry(row, "起始编号", "lb_start", "1", 8, "按文件名自然顺序编号")
         self._small_entry(row, "只保留 inline（可空）", "lb_il", "", 12, "如 220,232；空 = 整个地震体")
         self.v["lb_copy"] = tk.BooleanVar(value=False)
-        ttk.Checkbutton(p, text="同时把地震复制成 seismic.npy", style="Card.TCheckbutton",
-                        variable=self.v["lb_copy"]).grid(row=1, column=0, sticky="w", pady=(8, 0))
+        self._check(p, "同时把地震复制成 seismic.npy", self.v["lb_copy"]).grid(row=1, column=0, sticky="w", pady=(6, 0))
         self._grid_card(t, "lb_", "lb_seis")
         ttk.Label(t, text="TS 需在本工具导出的 SEG-Y 上解释（同一组起点 / 采样间隔 / 道距）",
                   style="Muted.TLabel").pack(anchor="w")
@@ -336,10 +364,8 @@ class App(tk.Tk):
         box.pack(side="left", anchor="n")
         ttk.Label(box, text="起点（写进 info.json）", style="Card.TLabel").pack(anchor="w")
         self.v["tn_origin"] = tk.StringVar(value="lines")
-        ttk.Radiobutton(box, text="按线号（本工具导出的 SEG-Y 用这个，可原样往返）", value="lines",
-                        variable=self.v["tn_origin"], style="Card.TRadiobutton").pack(anchor="w")
-        ttk.Radiobutton(box, text="从 0 开始（数组下标 = 起点 0,0）", value="zero",
-                        variable=self.v["tn_origin"], style="Card.TRadiobutton").pack(anchor="w")
+        self._radio(box, "按线号（本工具导出的 SEG-Y 用这个，可原样往返）", "lines", self.v["tn_origin"]).pack(anchor="w")
+        self._radio(box, "从 0 开始（数组下标 = 起点 0,0）", "zero", self.v["tn_origin"]).pack(anchor="w")
         self._actions(t, self._run_tonpy, "tn_out")
 
     def _suggest_npy(self):
